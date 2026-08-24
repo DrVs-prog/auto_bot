@@ -34,50 +34,59 @@ client_openai = OpenAI(api_key=OPENAI_API_KEY)
 def search_avito(part_name, brand=""):
     """Поиск запчастей на Avito через официальный REST API Carapis"""
     query = f"{brand} {part_name}" if brand and brand != "Любая" else part_name
-    
-    # Эндпоинт API Carapis для поиска по автозапчастям
-    url = "https://api.carapis.com/v2/vehicles/list"
-    
+
+    # ПРАВИЛЬНЫЙ ЭНДПОИНТ: /v2/listings
+    url = "https://api.carapis.com/v2/listings"
+
     headers = {
         "Authorization": f"Bearer {CARAPIS_API_KEY}",
         "Content-Type": "application/json"
     }
-    
-    # Параметры запроса (фильтры)
+
+    # ПРАВИЛЬНЫЕ ПАРАМЕТРЫ: source=avito-ru
     params = {
-        "search": query[:50],      # Поисковая фраза
-        "source": "avito-ru",      # Источник: Avito Россия
-        "page_size": 10,           # Количество результатов
-        "sort_by": "price_asc"     # Сортировка по возрастанию цены
+        "source": "avito-ru",      # <-- ИСТОЧНИК
+        "search": query[:50],      # Поисковый запрос
+        "limit": 10,               # Количество результатов
+        # "sort": "price_asc"     # Сортировка (если поддерживается)
     }
-    
+
     try:
         response = requests.get(url, headers=headers, params=params, timeout=10)
-        
+
         if response.status_code == 200:
             data = response.json()
+            # Проверяем структуру ответа
             results = data.get("results", [])
-            
+
             if not results:
+                print("По запросу ничего не найдено.")
                 return None
-            
+
             items = []
             for item in results[:6]:
-                # Извлекаем данные из ответа
-                price = item.get("price", 0)
+                # Извлекаем цену и другие данные
+                price = item.get("price")
+                # Приводим цену к числу, если она пришла в виде строки
+                if isinstance(price, str):
+                    try:
+                        price = int(price.replace(" ", "").replace("₽", ""))
+                    except:
+                        price = 0
+
                 if price and price > 100:
                     items.append({
                         "title": item.get("title", "Деталь"),
                         "price": price,
-                        "url": item.get("listing_url", "#"),
-                        "city": item.get("location", {}).get("city", "РФ") if isinstance(item.get("location"), dict) else "РФ"
+                        "url": item.get("url") or item.get("listing_url", "#"),
+                        "city": item.get("city", item.get("location", {}).get("city", "РФ"))
                     })
             return items if items else None
-            
+
         else:
             print(f"Carapis API Error: {response.status_code} - {response.text}")
             return None
-            
+
     except Exception as e:
         print(f"Carapis Request Error: {e}")
         return None

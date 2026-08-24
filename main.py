@@ -5,29 +5,29 @@ import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from openai import OpenAI
+from aiohttp import web
 
 # ============================================
-# КЛЮЧИ БЕРУТСЯ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ (БЕЗОПАСНО!)
+# КЛЮЧИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ
 # ============================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-AVITO_API_KEY = os.getenv("AVITO_API_KEY", "demo")  # Если нет, то "demo"
+AVITO_API_KEY = os.getenv("AVITO_API_KEY", "demo")
 
-# Проверка, что ключи заданы
 if not TELEGRAM_TOKEN:
-    raise ValueError("❌ Ошибка: TELEGRAM_TOKEN не задан в переменных окружения!")
+    raise ValueError("❌ TELEGRAM_TOKEN не задан!")
 if not OPENAI_API_KEY:
-    raise ValueError("❌ Ошибка: OPENAI_API_KEY не задан в переменных окружения!")
+    raise ValueError("❌ OPENAI_API_KEY не задан!")
 
 # ============================================
-# Инициализация
+# ИНИЦИАЛИЗАЦИЯ
 # ============================================
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 client_openai = OpenAI(api_key=OPENAI_API_KEY)
 
 # ============================================
-# 1. Функция: ИИ парсит запрос
+# 1. ПАРСЕР ЗАПРОСА (ИИ)
 # ============================================
 def parse_user_request(text):
     prompt = f"""
@@ -59,7 +59,7 @@ def parse_user_request(text):
         return {"brand": "Неизвестно", "model": "", "part": text, "article": None}
 
 # ============================================
-# 2. Функция: Поиск на Avito
+# 2. ПОИСК НА AVITO
 # ============================================
 def search_avito(part_name, brand=""):
     query = f"{brand} {part_name}" if brand and brand != "Любая" else part_name
@@ -95,7 +95,7 @@ def search_avito(part_name, brand=""):
     return None
 
 # ============================================
-# 3. Функция: Генерация красивого ответа через GPT
+# 3. ГЕНЕРАЦИЯ ОТВЕТА (ИИ)
 # ============================================
 def generate_beautiful_response(parsed_data, items):
     if not items or len(items) < 2:
@@ -136,7 +136,7 @@ def generate_beautiful_response(parsed_data, items):
         return fallback
 
 # ============================================
-# 4. ОСНОВНОЙ ОБРАБОТЧИК
+# 4. ОБРАБОТЧИК СООБЩЕНИЙ
 # ============================================
 @dp.message()
 async def handle_all_messages(message: Message):
@@ -189,11 +189,36 @@ async def handle_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 # ============================================
-# 5. ЗАПУСК
+# 5. ЗАГЛУШКА ДЛЯ RENDER (ВЕБ-СЕРВЕР)
 # ============================================
-async def main():
+async def health_check(request):
+    return web.Response(text="🤖 Bot is running!")
+
+async def start_bot():
+    """Запускает Telegram-бота"""
     print("🤖 Бот запущен и слушает сообщения...")
     await dp.start_polling(bot)
+
+async def start_web():
+    """Запускает веб-сервер для Render"""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 10000)
+    await site.start()
+    print("🌐 Веб-сервер запущен на порту 10000")
+    await asyncio.Event().wait()  # Бесконечное ожидание
+
+# ============================================
+# 6. ЗАПУСК (БОТ + ВЕБ-СЕРВЕР)
+# ============================================
+async def main():
+    # Запускаем бота и веб-сервер параллельно
+    await asyncio.gather(
+        start_bot(),
+        start_web()
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())

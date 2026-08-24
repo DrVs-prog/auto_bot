@@ -12,12 +12,14 @@ from aiohttp import web
 # ============================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-AVITO_API_KEY = os.getenv("AVITO_API_KEY", "demo")
+CARAPIS_API_KEY = os.getenv("CARAPIS_API_KEY")  # Твой новый ключ
 
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_TOKEN не задан!")
 if not OPENAI_API_KEY:
     raise ValueError("❌ OPENAI_API_KEY не задан!")
+if not CARAPIS_API_KEY:
+    raise ValueError("❌ CARAPIS_API_KEY не задан! Получи ключ на dashboard.carapis.com")
 
 # ============================================
 # ИНИЦИАЛИЗАЦИЯ
@@ -27,7 +29,61 @@ dp = Dispatcher()
 client_openai = OpenAI(api_key=OPENAI_API_KEY)
 
 # ============================================
-# 1. ПАРСЕР ЗАПРОСА (ИИ)
+# 1. ПОИСК НА AVITO (через прямой API Carapis)
+# ============================================
+def search_avito(part_name, brand=""):
+    """Поиск запчастей на Avito через официальный REST API Carapis"""
+    query = f"{brand} {part_name}" if brand and brand != "Любая" else part_name
+    
+    # Эндпоинт API Carapis для поиска по автозапчастям
+    url = "https://api.carapis.com/v2/vehicles/list"
+    
+    headers = {
+        "Authorization": f"Bearer {CARAPIS_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    # Параметры запроса (фильтры)
+    params = {
+        "search": query[:50],      # Поисковая фраза
+        "source": "avito-ru",      # Источник: Avito Россия
+        "page_size": 10,           # Количество результатов
+        "sort_by": "price_asc"     # Сортировка по возрастанию цены
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get("results", [])
+            
+            if not results:
+                return None
+            
+            items = []
+            for item in results[:6]:
+                # Извлекаем данные из ответа
+                price = item.get("price", 0)
+                if price and price > 100:
+                    items.append({
+                        "title": item.get("title", "Деталь"),
+                        "price": price,
+                        "url": item.get("listing_url", "#"),
+                        "city": item.get("location", {}).get("city", "РФ") if isinstance(item.get("location"), dict) else "РФ"
+                    })
+            return items if items else None
+            
+        else:
+            print(f"Carapis API Error: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"Carapis Request Error: {e}")
+        return None
+
+# ============================================
+# 2. ПАРСЕР ЗАПРОСА (ИИ)
 # ============================================
 def parse_user_request(text):
     prompt = f"""
@@ -45,7 +101,6 @@ def parse_user_request(text):
 
     Текст пользователя: {text}
     """
-    
     try:
         response = client_openai.chat.completions.create(
             model="gpt-4o-mini",
@@ -59,51 +114,15 @@ def parse_user_request(text):
         return {"brand": "Неизвестно", "model": "", "part": text, "article": None}
 
 # ============================================
-# 2. ПОИСК НА AVITO
-# ============================================
-def search_avito(part_name, brand=""):
-    query = f"{brand} {part_name}" if brand and brand != "Любая" else part_name
-    url = "https://api.avito.ru/core/v1/items"
-    headers = {"Authorization": AVITO_API_KEY, "Content-Type": "application/json"}
-    params = {"q": query[:50], "limit": 10, "sort": "price_asc"}
-    
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            items = data.get("result", [])
-            if not items:
-                return None
-            results = []
-            for item in items[:6]:
-                price = item.get("price", 0)
-                if isinstance(price, int) and price > 1000:
-                    price = price // 100
-                else:
-                    price = int(price) if price else 0
-                if price < 50:
-                    continue
-                results.append({
-                    "title": item.get("title", "Деталь"),
-                    "price": price,
-                    "url": item.get("url", f"https://avito.ru/item/{item.get('id')}"),
-                    "city": item.get("location", {}).get("name", "РФ")
-                })
-            return results[:6]
-    except Exception as e:
-        print(f"Avito API Error: {e}")
-    return None
-
-# ============================================
-# 3. ГЕНЕРАЦИЯ ОТВЕТА (ИИ)
+# 3. ГЕНЕРАЦИЯ КРАСИВОГО ОТВЕТА (ИИ)
 # ============================================
 def generate_beautiful_response(parsed_data, items):
-    if not items or len(items) < 2:
-        return "🔍 По вашему запросу на Avito ничего не найдено."
+    if not items or len(items) < 1:
+        return "🔍 По вашему запросу на Avito ничего не найдено. Попробуйте уточнить запрос."
 
     items_text = ""
     for i, item in enumerate(items):
-        items_text += f"{i+1}. {item['title']} — {item['price']} руб. ({item['city']})\n"
+        items_text += f"{i+1}. {item['title']} — {item['price']} ₽ ({item['city']})\n"
 
     prompt = f"""
     Ты — помощник автовладельца. У нас есть список запчастей с ценами.
@@ -130,9 +149,9 @@ def generate_beautiful_response(parsed_data, items):
         )
         return response.choices[0].message.content
     except:
-        fallback = "Вот что нашлось:\n"
+        fallback = "🔍 Нашлось:\n"
         for item in items[:3]:
-            fallback += f"• {item['title']} — {item['price']} руб.\n"
+            fallback += f"• {item['title']} — {item['price']} ₽\n"
         return fallback
 
 # ============================================
@@ -160,7 +179,7 @@ async def handle_all_messages(message: Message):
     if not items:
         await message.answer(
             f"🔍 По запросу *{search_query}* ничего не найдено на Avito.\n"
-            "Попробуйте написать короче, например: *стартер шевроле круз*",
+            "Попробуйте уточнить запрос или написать короче.",
             parse_mode="Markdown"
         )
         return
@@ -195,12 +214,10 @@ async def health_check(request):
     return web.Response(text="🤖 Bot is running!")
 
 async def start_bot():
-    """Запускает Telegram-бота"""
     print("🤖 Бот запущен и слушает сообщения...")
     await dp.start_polling(bot)
 
 async def start_web():
-    """Запускает веб-сервер для Render"""
     app = web.Application()
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
@@ -208,13 +225,12 @@ async def start_web():
     site = web.TCPSite(runner, '0.0.0.0', 10000)
     await site.start()
     print("🌐 Веб-сервер запущен на порту 10000")
-    await asyncio.Event().wait()  # Бесконечное ожидание
+    await asyncio.Event().wait()
 
 # ============================================
-# 6. ЗАПУСК (БОТ + ВЕБ-СЕРВЕР)
+# 6. ЗАПУСК
 # ============================================
 async def main():
-    # Запускаем бота и веб-сервер параллельно
     await asyncio.gather(
         start_bot(),
         start_web()
